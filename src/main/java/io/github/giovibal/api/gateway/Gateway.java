@@ -1,6 +1,7 @@
 package io.github.giovibal.api.gateway;
 
 import io.vertx.core.AbstractVerticle;
+import io.vertx.core.DeploymentOptions;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.*;
@@ -15,7 +16,26 @@ import java.util.Set;
 public class Gateway extends AbstractVerticle {
 
     public static void main(String[] args) {
-        Vertx.vertx().deployVerticle(Gateway.class.getName());
+        Vertx vertx = Vertx.vertx();
+//        vertx.deployVerticle(Gateway.class.getName());
+
+        JsonObject frontendConf = new JsonObject()
+                .put("port", 8080)
+                .put("compressionSupported", true)
+                .put("tcpKeepAlive", true)
+                .put("acceptBacklog", 1024)
+                .put("receiveBufferSize", 1024)
+                .put("backend", "backend.test")
+                ;
+
+        JsonObject backendConf = new JsonObject()
+                .put("defaultHost", "192.168.0.1")
+                .put("defaultPort", 80)
+                .put("backend", "backend.test")
+                ;
+
+        vertx.deployVerticle(Backend.class.getName(), new DeploymentOptions().setConfig(backendConf));
+        vertx.deployVerticle(Frontend.class.getName(), new DeploymentOptions().setConfig(frontendConf));
     }
 
     private PerfTimer perfTimer = new PerfTimer();
@@ -24,33 +44,35 @@ public class Gateway extends AbstractVerticle {
     @Override
     public void start() throws Exception {
 
-        String backendHost = "192.168.0.1";
-        int backendPort = 80;
-
         // Prepare BACKEND
         JsonObject backendConf = new JsonObject()
-                .put("defaultHost", backendHost)
-                .put("defaultPort", backendPort)
+                .put("defaultHost", "192.168.0.1")
+                .put("defaultPort", 80)
                 ;
-        HttpClientOptions opt = new HttpClientOptions(backendConf)
-//                .setSsl(true)
-//                .setDefaultHost(backendHost)
-//                .setDefaultPort(backendPort)
-            ;
+        HttpClientOptions backendOpt = new HttpClientOptions(backendConf);
+        HttpClient backend = vertx.createHttpClient(backendOpt);
 
-        HttpClient client = vertx.createHttpClient(opt);
 
         // Prepare FRONTEND
-        HttpServer server = vertx.createHttpServer();
-        server.requestHandler(request -> {
+        JsonObject frontendConf = new JsonObject()
+                .put("port", 8080)
+                .put("compressionSupported", true)
+                .put("acceptBacklog", 1024)
+                .put("receiveBufferSize", 1024)
+                ;
+        HttpServerOptions frontendOpt = new HttpServerOptions(frontendConf);
+        HttpServer frontend = vertx.createHttpServer(frontendOpt);
+        frontend.requestHandler(request -> {
 
             perfTimer.start();
-            System.out.println(request.method()+" "+request.absoluteURI());
 
             HttpMethod method = request.method();
             String uri = request.uri();
-            HttpClientRequest backendRequest = client.request(method, uri, backendResponse -> {
+            System.out.println(method+" "+uri);
+
+            HttpClientRequest backendRequest = backend.request(method, uri, backendResponse -> {
                 HttpServerResponse response = request.response();
+
                 copyHeadersFromBackendToFrontend(backendResponse, response);
                 sendBackendRequestToFrontendRequest(backendResponse, response);
             });
@@ -59,7 +81,7 @@ public class Gateway extends AbstractVerticle {
             sendFrontendRequestToBackendReqeust(request, backendRequest);
         });
 
-        server.listen(8080);
+        frontend.listen();
     }
 
     // response: backend ---> frontend
@@ -76,10 +98,8 @@ public class Gateway extends AbstractVerticle {
         to.setStatusCode(from.statusCode());
         to.setStatusMessage(from.statusMessage());
         to.setChunked(true);
-        from.handler(backendBuffer -> {
-            to.write(backendBuffer);
-        });
 
+        from.handler(to::write);
         from.endHandler(event -> {
 //            perfTimerBackend.checkpoint("backend time");
             perfTimerBackend.stop();
@@ -101,9 +121,7 @@ public class Gateway extends AbstractVerticle {
         }
     }
     private void sendFrontendRequestToBackendReqeust(HttpServerRequest from, HttpClientRequest to) {
-        from.handler(frontendRequestedData -> {
-            to.write(frontendRequestedData);
-        });
+        from.handler(to::write);
         from.endHandler(event -> {
             perfTimerBackend.start();
             to.end();
