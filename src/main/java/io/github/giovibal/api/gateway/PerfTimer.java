@@ -8,11 +8,16 @@ public class PerfTimer {
 
     public void start() {
         t1=System.currentTimeMillis();
+        t2=0;
+        t3=0;
     }
     public void stop() {
+        if(t1==0) {
+            start();
+        }
         t2=System.currentTimeMillis();
-        t3+=t2-t1;
-        t1=t2;
+        t3=t2-t1;
+//        t1=t2;
     }
     public void checkpoint(String label) {
         stop();

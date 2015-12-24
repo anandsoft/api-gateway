@@ -4,6 +4,7 @@ import io.vertx.core.AbstractVerticle;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.*;
+import io.vertx.core.json.JsonObject;
 
 import java.util.List;
 import java.util.Set;
@@ -23,79 +24,89 @@ public class Gateway extends AbstractVerticle {
     @Override
     public void start() throws Exception {
 
+        String backendHost = "192.168.0.1";
+        int backendPort = 80;
 
-
-        HttpServer server = vertx.createHttpServer();
-
-        // http://172.16.11.52:3000/api/2.0/config/graph?tenant=test.it
-        HttpClientOptions opt = new HttpClientOptions()
-                .setDefaultHost("172.16.11.52")
-                .setDefaultPort(3000)
+        // Prepare BACKEND
+        JsonObject backendConf = new JsonObject()
+                .put("defaultHost", backendHost)
+                .put("defaultPort", backendPort)
+                ;
+        HttpClientOptions opt = new HttpClientOptions(backendConf)
+//                .setSsl(true)
+//                .setDefaultHost(backendHost)
+//                .setDefaultPort(backendPort)
             ;
 
         HttpClient client = vertx.createHttpClient(opt);
 
+        // Prepare FRONTEND
+        HttpServer server = vertx.createHttpServer();
         server.requestHandler(request -> {
 
             perfTimer.start();
-
-
-//            // This handler gets called for each request that arrives on the server
-//            HttpServerResponse response = request.response();
-//            response.putHeader("content-type", "text/plain");
-//
-//            // Write to the response and end it
-//            response.end("Hello World!");
             System.out.println(request.method()+" "+request.absoluteURI());
-
-
 
             HttpMethod method = request.method();
             String uri = request.uri();
             HttpClientRequest backendRequest = client.request(method, uri, backendResponse -> {
-
-                // HEADERS
                 HttpServerResponse response = request.response();
-                MultiMap headers = backendResponse.headers();
-                Set<String> names = headers.names();
-                for (String name : names) {
-                    List<String> values = headers.getAll(name);
-                    response.putHeader(name, values);
-                    System.out.println("HEADER fe << be: "+ name +" = "+ values);
-                }
-
-                // BODY
-                response.setStatusCode(backendResponse.statusCode());
-                response.setStatusMessage(backendResponse.statusMessage());
-                backendResponse.handler(backendBuffer -> {
-                    response.write(backendBuffer);
-                });
-
-                backendResponse.endHandler(event -> {
-                    perfTimerBackend.checkpoint("backend time");
-                    response.end();
-                    perfTimer.checkpoint("total time");
-                    perfTimer.printStats("gateway time", perfTimerBackend);
-                });
+                copyHeadersFromBackendToFrontend(backendResponse, response);
+                sendBackendRequestToFrontendRequest(backendResponse, response);
             });
 
-            // backend request headers
-            MultiMap headers = request.headers();
-            Set<String> names = headers.names();
-            for (String name : names) {
-                List<String> values = headers.getAll(name);
-                backendRequest.putHeader(name, values);
-                System.out.println("HEADER fe >> be: "+ name +" = "+ values);
-            }
-
-            // trigger backend request
-            request.bodyHandler(requestBody -> {
-                //requestBody
-                perfTimerBackend.start();
-                backendRequest.end(requestBody);
-            });
+            copyHeadersFromFrontendToBackend(request, backendRequest);
+            sendFrontendRequestToBackendReqeust(request, backendRequest);
         });
 
         server.listen(8080);
+    }
+
+    // response: backend ---> frontend
+    private void copyHeadersFromBackendToFrontend(HttpClientResponse from, HttpServerResponse to) {
+        MultiMap headers = from.headers();
+        Set<String> names = headers.names();
+        for (String name : names) {
+            List<String> values = headers.getAll(name);
+            to.putHeader(name, values);
+//            System.out.println("HEADER fe << be: "+ name +" = "+ values);
+        }
+    }
+    private void sendBackendRequestToFrontendRequest(HttpClientResponse from, HttpServerResponse to) {
+        to.setStatusCode(from.statusCode());
+        to.setStatusMessage(from.statusMessage());
+        to.setChunked(true);
+        from.handler(backendBuffer -> {
+            to.write(backendBuffer);
+        });
+
+        from.endHandler(event -> {
+//            perfTimerBackend.checkpoint("backend time");
+            perfTimerBackend.stop();
+            to.end();
+//            perfTimer.checkpoint("total time");
+            perfTimer.stop();
+            perfTimer.printStats("gateway time", perfTimerBackend);
+        });
+    }
+
+    // request: frontend ---> backend
+    private void copyHeadersFromFrontendToBackend(HttpServerRequest from, HttpClientRequest to) {
+        MultiMap headers = from.headers();
+        Set<String> names = headers.names();
+        for (String name : names) {
+            List<String> values = headers.getAll(name);
+            to.putHeader(name, values);
+//            System.out.println("HEADER fe >> be: "+ name +" = "+ values);
+        }
+    }
+    private void sendFrontendRequestToBackendReqeust(HttpServerRequest from, HttpClientRequest to) {
+        from.handler(frontendRequestedData -> {
+            to.write(frontendRequestedData);
+        });
+        from.endHandler(event -> {
+            perfTimerBackend.start();
+            to.end();
+        });
     }
 }
